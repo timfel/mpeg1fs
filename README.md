@@ -1,4 +1,4 @@
-# A FUSE Filesystem for serving MPEG1 video
+# A FUSE Filesystem for streaming MPEG1 video and Youtube to my Amiga
 
 I got unhappy that my PiStormed Amiga has fast network and CPU, but I cannot just go and stream videos on my NAS or from YouTube (yes, AmiTube exists, but then I have to wait for the video to load).
 
