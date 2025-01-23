@@ -307,7 +307,7 @@ class YTFS(Operations):
         self.process = None
 
 
-if __name__ == "__main__":
+def main():
     from argparse import ArgumentParser
 
     parser = ArgumentParser(
@@ -356,3 +356,7 @@ if __name__ == "__main__":
             foreground=args.foreground,
             allow_other=True,
         )
+
+
+if __name__ == "__main__":
+    main()
