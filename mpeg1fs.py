@@ -7,6 +7,7 @@ import sys
 import errno
 import subprocess
 import stat
+import threading
 import time
 from typing import IO
 
@@ -167,8 +168,8 @@ class MpegTranscode(Operations):
 
 
 class YTFS(Operations):
-    YDL_OPTIONS = {"noplaylist": "True"}
-    NUMBER_OF_VIDEOS = 10
+    YDL_OPTIONS = {"noplaylist": "True", 'extractor_args': {'youtube': {'player_client': ['tv']}}}
+    NUMBER_OF_VIDEOS = 4
     VIDEOS_KEY = 0
     SEARCH_KEY = 1
 
@@ -179,16 +180,15 @@ class YTFS(Operations):
         self.create_on_navigation = create_on_navigation
 
     def _ascii(self, s):
-        return "".join(c if ord(c) < 128 else "-" for c in s)
+        return "".join(c if c.isalnum() else "-" for c in s)
 
-    def _search(self, root, head):
-        search = " ".join([root[self.SEARCH_KEY], head])
-        root[head] = {self.SEARCH_KEY: search}
+    def _search(self, root):
+        search = root[self.SEARCH_KEY]
         with YoutubeDL(self.YDL_OPTIONS) as ydl:
-            videos = ydl.extract_info(f"ytsearch:{search}", download=False)["entries"][
-                0 : self.NUMBER_OF_VIDEOS
-            ]
-            root[head][self.VIDEOS_KEY] = {
+            videos = ydl.extract_info(
+                f"ytsearch{self.NUMBER_OF_VIDEOS}:{search}", download=False
+            )["entries"]
+            root[self.VIDEOS_KEY] = {
                 self._ascii(entry["title"]): entry for entry in videos
             }
 
@@ -209,7 +209,9 @@ class YTFS(Operations):
             raise FuseOSError(errno.ENOENT)
         if head in root:
             raise FuseOSError(errno.EEXIST)
-        self._search(root, head)
+        search = " ".join([root[self.SEARCH_KEY], head])
+        root[head] = {self.SEARCH_KEY: search, self.VIDEOS_KEY: {}}
+        threading.Thread(target=self._search, args=(root[head],)).start()
 
     def access(self, path, mode):
         root, head, tail = self._find_directory(path)
@@ -241,7 +243,7 @@ class YTFS(Operations):
                 st_size=0,
                 st_uid=os.getuid(),
             )
-        if self.create_on_navigation:
+        if self.create_on_navigation and not any(s in path for s in ('.', '(', ')')):
             self.mkdir(path, 0o777)
             return self.getattr(path)
         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
