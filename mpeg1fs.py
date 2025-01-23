@@ -167,26 +167,29 @@ class MpegTranscode(Operations):
 
 
 class YTFS(Operations):
-    YDL_OPTIONS = {'noplaylist':'True'}
+    YDL_OPTIONS = {"noplaylist": "True"}
     NUMBER_OF_VIDEOS = 10
     VIDEOS_KEY = 0
     SEARCH_KEY = 1
 
-    def __init__(self):
+    def __init__(self, create_on_navigation=False):
         self.process: subprocess.Popen | None = None
         self.ytprocess: subprocess.Popen | None = None
         self.directories = {self.VIDEOS_KEY: {}, self.SEARCH_KEY: ""}
+        self.create_on_navigation = create_on_navigation
 
     def _ascii(self, s):
-        return ''.join(c if ord(c) < 128 else '-' for c in s)
+        return "".join(c if ord(c) < 128 else "-" for c in s)
 
     def _search(self, root, head):
         search = " ".join([root[self.SEARCH_KEY], head])
         root[head] = {self.SEARCH_KEY: search}
         with YoutubeDL(self.YDL_OPTIONS) as ydl:
-            videos = ydl.extract_info(f"ytsearch:{search}", download=False)['entries'][0:self.NUMBER_OF_VIDEOS]
+            videos = ydl.extract_info(f"ytsearch:{search}", download=False)["entries"][
+                0 : self.NUMBER_OF_VIDEOS
+            ]
             root[head][self.VIDEOS_KEY] = {
-                self._ascii(entry['title']): entry for entry in videos
+                self._ascii(entry["title"]): entry for entry in videos
             }
 
     def _find_directory(self, path) -> tuple[str, str | None, list[str] | None]:
@@ -238,10 +241,13 @@ class YTFS(Operations):
                 st_size=0,
                 st_uid=os.getuid(),
             )
+        if self.create_on_navigation:
+            self.mkdir(path, 0o777)
+            return self.getattr(path)
         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
 
     def getxattr(self, path, name, position=0):
-        self.getattr(path) # for the exception
+        self.getattr(path)  # for the exception
         return b""
 
     def readdir(self, path, fh):
@@ -265,7 +271,7 @@ class YTFS(Operations):
         if not video:
             raise FuseOSError(errno.ENOENT)
         print(f"Opening {video['title']=}")
-        url = video['webpage_url']
+        url = video["webpage_url"]
         self.ytprocess = subprocess.Popen(
             [
                 os.path.join(os.path.dirname(sys.executable), "yt-dlp"),
@@ -286,7 +292,7 @@ class YTFS(Operations):
             text=False,
             bufsize=0,
         )
-        self.ytprocess.stdout.close() # enable write error in ytdl if ffmpeg dies
+        self.ytprocess.stdout.close()  # enable write error in ytdl if ffmpeg dies
         return id(self.process)
 
     def read(self, path, length, offset, fh):
@@ -301,20 +307,38 @@ class YTFS(Operations):
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
-    parser = ArgumentParser(description="Mount a filesystem with MPEG transcoding and YouTube search capabilities.")
-    parser.add_argument("source_dir", nargs='?', help="Source directory to mount. If none given, we mount YouTube", default=None)
+
+    parser = ArgumentParser(
+        description="Mount a filesystem with MPEG transcoding and YouTube search capabilities."
+    )
+    parser.add_argument(
+        "source_dir",
+        nargs="?",
+        help="Source directory to mount. If none given, we mount YouTube",
+        default=None,
+    )
     parser.add_argument("target_dir", help="Target directory to mount the filesystem")
-    parser.add_argument("-d", "--debug", action="store_true", help="Enable debug output")
-    parser.add_argument("-f", "--foreground", action="store_true", help="Run in foreground")
+    parser.add_argument(
+        "-d", "--debug", action="store_true", help="Enable debug output"
+    )
+    parser.add_argument(
+        "-f", "--foreground", action="store_true", help="Run in foreground"
+    )
+    parser.add_argument(
+        "--create-on-navigation",
+        action="store_true",
+        help="Create YouTube directions on navigation (without explicit mkdir).",
+    )
     args = parser.parse_args()
 
     if args.debug:
         import logging
+
         logging.basicConfig(level=logging.DEBUG)
 
     if args.source_dir is None:
         FUSE(
-            YTFS(),
+            YTFS(create_on_navigation=args.create_on_navigation),
             args.target_dir,
             debug=args.debug,
             nothreads=True,
