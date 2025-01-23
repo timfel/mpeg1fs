@@ -215,19 +215,7 @@ class YTFS(Operations):
 
     def getattr(self, path, fh=None):
         root, head, tail = self._find_directory(path)
-        if head in root or not head:
-            return dict(
-                st_atime=0,
-                st_ctime=0,
-                st_gid=os.getgid(),
-                st_mode=(stat.S_IFDIR | 0o777),
-                st_mtime=0,
-                st_nlink=1,
-                st_size=0,
-                st_uid=os.getuid(),
-            )
         if head in root[self.VIDEOS_KEY]:
-            info: dict = root[self.VIDEOS_KEY][head]
             return dict(
                 st_atime=0,
                 st_ctime=0,
@@ -238,7 +226,23 @@ class YTFS(Operations):
                 st_size=2**30,
                 st_uid=os.getuid(),
             )
+        if head in root or not head:
+            root = root[head] if head else root
+            return dict(
+                st_atime=0,
+                st_ctime=0,
+                st_gid=os.getgid(),
+                st_mode=(stat.S_IFDIR | 0o777),
+                st_mtime=0,
+                st_nlink=len(root.keys()),
+                st_size=0,
+                st_uid=os.getuid(),
+            )
         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
+
+    def getxattr(self, path, name, position=0):
+        self.getattr(path) # for the exception
+        return b""
 
     def readdir(self, path, fh):
         root, head, _ = self._find_directory(path)
@@ -300,20 +304,29 @@ if __name__ == "__main__":
     parser = ArgumentParser(description="Mount a filesystem with MPEG transcoding and YouTube search capabilities.")
     parser.add_argument("source_dir", nargs='?', help="Source directory to mount. If none given, we mount YouTube", default=None)
     parser.add_argument("target_dir", help="Target directory to mount the filesystem")
+    parser.add_argument("-d", "--debug", action="store_true", help="Enable debug output")
+    parser.add_argument("-f", "--foreground", action="store_true", help="Run in foreground")
     args = parser.parse_args()
+
+    if args.debug:
+        import logging
+        logging.basicConfig(level=logging.DEBUG)
+
     if args.source_dir is None:
         FUSE(
             YTFS(),
             args.target_dir,
+            debug=args.debug,
             nothreads=True,
-            foreground=True,
+            foreground=args.foreground,
             allow_other=True,
         )
     else:
         FUSE(
             MpegTranscode(args.source_dir),
             args.target_dir,
+            debug=args.debug,
             nothreads=True,
-            foreground=True,
+            foreground=args.foreground,
             allow_other=True,
         )
