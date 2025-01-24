@@ -15,7 +15,7 @@ from fuse import FUSE, FuseOSError, Operations
 from yt_dlp import YoutubeDL
 
 
-def _ffmpeg_command(full_path):
+def _ffmpeg_command(full_path, hq=False):
     return [
         shutil.which("ffmpeg"),
         "-i",
@@ -23,17 +23,17 @@ def _ffmpeg_command(full_path):
         "-f",
         "mpeg",
         "-vf",
-        "scale=352:-1",
+        "scale=720:-1" if hq else "scale=352:-1",
         "-c:v",
         "mpeg1video",
         "-b:v",
-        "512k",
+        "1000k" if hq else "512k",
         "-c:a",
         "mp2",
         "-b:a",
-        "64k",
+        "128k" if hq else "64k",
         "-ar",
-        "16000",
+        "32000" if hq else "16000",
         "-ac",
         "1",
         "-r",
@@ -57,8 +57,9 @@ def _read_pipe(fh: IO, length, timeout=30):
 
 
 class MpegTranscode(Operations):
-    def __init__(self, root: str):
+    def __init__(self, root: str, higher_quality=False):
         self.root = root
+        self.hq = higher_quality
         self.process: subprocess.Popen | None = None
 
     def _full_path(self, partial):
@@ -152,7 +153,7 @@ class MpegTranscode(Operations):
         full_path = self._full_path(path)
         print(f"Opening {full_path=}")
         self.process = subprocess.Popen(
-            _ffmpeg_command(full_path),
+            _ffmpeg_command(full_path, hq=self.hq),
             stdout=subprocess.PIPE,
             text=False,
             bufsize=0,
@@ -168,10 +169,15 @@ class MpegTranscode(Operations):
 
 
 class YTFS(Operations):
-    YDL_OPTIONS = {"noplaylist": "True", 'extractor_args': {'youtube': {'player_client': ['tv']}}}
+    YDL_OPTIONS = {
+        "noplaylist": "True",
+        "extractor_args": {"youtube": {"player_client": ["tv"]}},
+    }
     NUMBER_OF_VIDEOS = 4
     VIDEOS_KEY = 0
     SEARCH_KEY = 1
+    REFRESH_KEY = 2
+    HQPREFIX = "Higher Quality - "
 
     def __init__(self, create_on_navigation=False):
         self.process: subprocess.Popen | None = None
@@ -203,6 +209,10 @@ class YTFS(Operations):
             tail = tail[1:]
         return (root, head, tail)
 
+    def _get_video(self, root, name):
+        videos = root[self.VIDEOS_KEY]
+        return videos.get(name, videos.get(name[len(self.HQPREFIX) :]))
+
     def mkdir(self, path, mode):
         root, head, tail = self._find_directory(path)
         if tail:
@@ -211,16 +221,18 @@ class YTFS(Operations):
             raise FuseOSError(errno.EEXIST)
         search = " ".join([root[self.SEARCH_KEY], head])
         root[head] = {self.SEARCH_KEY: search, self.VIDEOS_KEY: {}}
-        threading.Thread(target=self._search, args=(root[head],)).start()
+        refresh_thread = threading.Thread(target=self._search, args=(root[head],))
+        root[head][self.REFRESH_KEY] = refresh_thread
+        refresh_thread.start()
 
     def access(self, path, mode):
         root, head, tail = self._find_directory(path)
-        if head and head not in root and head not in root[self.VIDEOS_KEY]:
+        if head and head not in root and not self._get_video(root, head):
             raise FuseOSError(errno.ENOENT)
 
     def getattr(self, path, fh=None):
         root, head, tail = self._find_directory(path)
-        if head in root[self.VIDEOS_KEY]:
+        if self._get_video(root, head):
             return dict(
                 st_atime=0,
                 st_ctime=0,
@@ -243,7 +255,7 @@ class YTFS(Operations):
                 st_size=0,
                 st_uid=os.getuid(),
             )
-        if self.create_on_navigation and not any(s in path for s in ('.', '(', ')')):
+        if self.create_on_navigation and not any(s in path for s in (".", "(", ")")):
             self.mkdir(path, 0o777)
             return self.getattr(path)
         raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), path)
@@ -257,9 +269,17 @@ class YTFS(Operations):
         if head and head not in root:
             raise FuseOSError(errno.ENOENT)
         root = root[head] if head else root
+        if refresh_thread := root.get(self.REFRESH_KEY):
+            refresh_thread.join()
+            del root[self.REFRESH_KEY]
         dirents = [".", ".."]
         dirents.extend(k for k in root.keys() if isinstance(k, str))
-        dirents.extend(k for k in root.get(0, {}).keys() if isinstance(k, str))
+        dirents.extend(k for k in root[self.VIDEOS_KEY].keys() if isinstance(k, str))
+        dirents.extend(
+            f"{self.HQPREFIX}{k}"
+            for k in root[self.VIDEOS_KEY].keys()
+            if isinstance(k, str)
+        )
         for r in dirents:
             yield r
 
@@ -269,10 +289,11 @@ class YTFS(Operations):
         root, head, _ = self._find_directory(path)
         if head in root:
             raise FuseOSError(errno.EACCES)
-        video = root[self.VIDEOS_KEY].get(head)
+        video = self._get_video(root, head)
         if not video:
             raise FuseOSError(errno.ENOENT)
         print(f"Opening {video['title']=}")
+        hq = head.startswith(self.HQPREFIX)
         url = video["webpage_url"]
         self.ytprocess = subprocess.Popen(
             [
@@ -288,7 +309,7 @@ class YTFS(Operations):
             bufsize=2**18,
         )
         self.process = subprocess.Popen(
-            _ffmpeg_command("pipe:0"),
+            _ffmpeg_command("pipe:0", hq=hq),
             stdin=self.ytprocess.stdout,
             stdout=subprocess.PIPE,
             text=False,
@@ -327,6 +348,12 @@ def main():
         "-f", "--foreground", action="store_true", help="Run in foreground"
     )
     parser.add_argument(
+        "-hq",
+        "--higher-quality",
+        action="store_true",
+        help="Serve higher quality video",
+    )
+    parser.add_argument(
         "--create-on-navigation",
         action="store_true",
         help="Create YouTube directions on navigation (without explicit mkdir).",
@@ -349,7 +376,7 @@ def main():
         )
     else:
         FUSE(
-            MpegTranscode(args.source_dir),
+            MpegTranscode(args.source_dir, args.higher_quality),
             args.target_dir,
             debug=args.debug,
             nothreads=True,

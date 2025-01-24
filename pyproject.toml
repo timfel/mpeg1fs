@@ -7,7 +7,7 @@ name = "mpeg1fs"
 description = "A FUSE FS that transcodes to MPEG1"
 license = {text = "AGPL-3.0-or-later"}
 readme = "README.md"
-dynamic = ["version"]
+version = "0.0.2"
 requires-python = ">= 3.10"
 dependencies = [
     "fusepy>=3.0.1",
